@@ -363,10 +363,11 @@ class CointegrationEngine:
             if coint_result.get('error'):
                 result['error'] = coint_result['error']
 
+            hr_str = f"{result['hedge_ratio']:.4f}" if result['hedge_ratio'] is not None else "None"
             logger.info(
                 f"Pair analysis: correlation={corr_result['correlation']:.4f}, "
                 f"cointegrated={result['is_cointegrated']}, "
-                f"hedge_ratio={result['hedge_ratio']:.4f if result['hedge_ratio'] else None}"
+                f"hedge_ratio={hr_str}"
             )
 
         except Exception as e:

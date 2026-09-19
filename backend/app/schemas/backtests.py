@@ -14,6 +14,7 @@ class BacktestConfig(BaseModel):
     position: str = Field(default="Volatility Adjusted", description="Position sizing method")
     start: str = Field(default="2020-01-01", description="Start date")
     end: str = Field(default="2025-12-31", description="End date")
+    pair_id: Optional[str] = Field(default=None, description="Optional specific pair to backtest")
 
     model_config = {
         "json_schema_extra": {
@@ -26,7 +27,8 @@ class BacktestConfig(BaseModel):
                 "slippage": 0.05,
                 "position": "Volatility Adjusted",
                 "start": "2020-01-01",
-                "end": "2025-12-31"
+                "end": "2025-12-31",
+                "pair_id": "reliance-tataconsum"
             }
         }
     }
@@ -66,6 +68,7 @@ class Trade(BaseModel):
 
 class BacktestResult(BaseModel):
     """Backtest results matching frontend interface"""
+    id: Optional[str] = None
     initial: float
     final: float
     total: float  # Total return percentage
@@ -76,6 +79,7 @@ class BacktestResult(BaseModel):
     winRate: float  # Win rate percentage
     profitFactor: float  # Profit factor
     count: int  # Number of trades
+    curve: Optional[List[dict]] = None
 
     model_config = {
         "json_schema_extra": {

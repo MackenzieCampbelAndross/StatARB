@@ -155,7 +155,7 @@ async def websocket_endpoint(
                 message = json.loads(data)
 
                 if message.get("action") == "subscribe":
-                    pair_ids = set(message.get("pair_ids", []))
+                    pair_ids = set(message.get("pair_ids", message.get("pairs", [])))
                     manager.subscribe(client_id, pair_ids)
                     await websocket.send_json({
                         "type": "status",
@@ -165,7 +165,7 @@ async def websocket_endpoint(
                     })
 
                 elif message.get("action") == "unsubscribe":
-                    pair_ids = set(message.get("pair_ids", []))
+                    pair_ids = set(message.get("pair_ids", message.get("pairs", [])))
                     manager.unsubscribe(client_id, pair_ids)
                     await websocket.send_json({
                         "type": "status",
@@ -289,35 +289,23 @@ async def get_current_signal_data(pair_id: str, db: Session) -> Optional[dict]:
         if not latest_price_a or not latest_price_b:
             return None
 
-        # Calculate current metrics
-        # (This would use real-time calculation in production)
-        hedge_ratio = pair.hedge_ratio or 1.0
-        spread = latest_price_a.close - hedge_ratio * latest_price_b.close
-
-        # Get Z-score and signal from recent data
-        from datetime import timedelta
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=30)
-
+        # Get recent prices for spread & Z-score calculation
         prices_a = db.query(Price).filter(
-            Price.symbol == pair.symbol_a,
-            Price.timestamp >= start_date,
-            Price.timestamp <= end_date
-        ).order_by(Price.timestamp).all()
+            Price.symbol == pair.symbol_a
+        ).order_by(Price.timestamp.desc()).limit(60).all()
 
         prices_b = db.query(Price).filter(
-            Price.symbol == pair.symbol_b,
-            Price.timestamp >= start_date,
-            Price.timestamp <= end_date
-        ).order_by(Price.timestamp).all()
+            Price.symbol == pair.symbol_b
+        ).order_by(Price.timestamp.desc()).limit(60).all()
 
         current_z = 0.0
         current_signal = "WATCH"
+        hedge_ratio = float(pair.hedge_ratio) if pair.hedge_ratio is not None else 1.0
 
         if prices_a and prices_b and len(prices_a) >= 20 and len(prices_b) >= 20:
             import pandas as pd
-            series_a = pd.Series([p.close for p in prices_a])
-            series_b = pd.Series([p.close for p in prices_b])
+            series_a = pd.Series([p.close for p in reversed(prices_a)])
+            series_b = pd.Series([p.close for p in reversed(prices_b)])
 
             spread_series = spread_calculator.calculate_spread(series_a, series_b, hedge_ratio)
             rolling_stats = spread_calculator.calculate_rolling_statistics(spread_series, window=20)
@@ -328,19 +316,32 @@ async def get_current_signal_data(pair_id: str, db: Session) -> Optional[dict]:
                 window=20
             )
 
-            current_z = z_score.iloc[-1] if len(z_score) > 0 else 0.0
+            if len(z_score) > 0 and not pd.isna(z_score.iloc[-1]):
+                current_z = float(z_score.iloc[-1])
 
             signal_info = signal_engine.generate_signal(current_z)
             current_signal = signal_info['signal']
 
+        # Simulated slight micro-tick around real market closing price (+/- 0.05%)
+        import random
+        tick_a = 1.0 + (random.random() - 0.5) * 0.001
+        tick_b = 1.0 + (random.random() - 0.5) * 0.001
+        sim_price_a = round(latest_price_a.close * tick_a, 2)
+        sim_price_b = round(latest_price_b.close * tick_b, 2)
+        sim_spread = round(sim_price_a - hedge_ratio * sim_price_b, 2)
+
+        import math
+        if math.isnan(current_z) or math.isinf(current_z):
+            current_z = 0.0
+
         return {
             "pair": f"{pair.symbol_a} / {pair.symbol_b}",
-            "priceA": round(latest_price_a.close, 2),
-            "priceB": round(latest_price_b.close, 2),
-            "spread": round(spread, 2),
+            "priceA": sim_price_a,
+            "priceB": sim_price_b,
+            "spread": sim_spread,
             "zScore": round(current_z, 2),
             "signal": current_signal,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().strftime("%H:%M:%S IST")
         }
 
     except Exception as e:

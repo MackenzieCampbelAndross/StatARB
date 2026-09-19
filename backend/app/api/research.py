@@ -1,34 +1,60 @@
-from fastapi import APIRouter, Depends
-from typing import List
-from sqlalchemy.orm import Session
-from app.schemas.backtests import BacktestConfig, ExperimentResult
-from app.database.session import get_db
-from app.models.research import ResearchExperiment
-from app.quant.backtesting.walk_forward import WalkForwardValidator, WalkForwardWindow
-from app.quant.backtesting.engine import BacktestEngine, BacktestConfig as QuantBacktestConfig
-from datetime import datetime
+import math
 import uuid
 import logging
+from datetime import datetime
+from typing import List
+
+import pandas as pd
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.database.session import get_db
+from app.models.research import ResearchExperiment
+from app.models.pair import Pair as PairModel
+from app.models.price import Price
+from app.quant.backtesting.engine import BacktestEngine, BacktestConfig as QuantBacktestConfig
+from app.quant.spread.calculator import SpreadCalculator
+from app.schemas.backtests import BacktestConfig, ExperimentResult
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+spread_calculator = SpreadCalculator()
+
+
+def sanitize_float(val, default=0.0):
+    if val is None:
+        return default
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return default
+        return f
+    except (ValueError, TypeError):
+        return default
 
 
 @router.post("/experiments", response_model=ExperimentResult)
 async def run_experiment(config: BacktestConfig, db: Session = Depends(get_db)) -> ExperimentResult:
     """
-    Run a research experiment with the given configuration.
-    Matches frontend runExperiment() function.
+    Run a research experiment with the given configuration using actual historical data.
     """
     try:
-        # Generate unique experiment ID
         experiment_id = str(uuid.uuid4())
 
-        # Convert to quantitative config
+        try:
+            start_dt = pd.to_datetime(config.start).to_pydatetime()
+        except Exception:
+            start_dt = datetime(2023, 1, 1)
+
+        try:
+            end_dt = pd.to_datetime(config.end).to_pydatetime()
+        except Exception:
+            end_dt = datetime.now()
+
         quant_config = QuantBacktestConfig(
-            start_date=datetime.strptime(config.start, "%Y-%m-%d"),
-            end_date=datetime.strptime(config.end, "%Y-%m-%d"),
+            start_date=start_dt,
+            end_date=end_dt,
             initial_capital=1000000.0,
             entry_z_score=config.entry,
             exit_z_score=config.exit,
@@ -37,34 +63,65 @@ async def run_experiment(config: BacktestConfig, db: Session = Depends(get_db)) 
             transaction_cost=config.cost,
             slippage=config.slippage,
             position_sizing=config.position,
-            correlation_threshold=0.70,
+            correlation_threshold=0.50,
             coint_p_value=0.05
         )
 
-        # Run walk-forward validation
-        walk_forward = WalkForwardValidator(
-            training_window_days=252,
-            testing_window_days=63,
-            step_size_days=63
+        pair = None
+        if config.pair_id:
+            pair = db.query(PairModel).filter(PairModel.id == config.pair_id).first()
+        if not pair:
+            pair = db.query(PairModel).filter(
+                PairModel.is_active == 1,
+                PairModel.coint_p_value <= 0.05
+            ).order_by(PairModel.coint_p_value.asc(), PairModel.correlation.desc()).first()
+
+        if not pair:
+            raise HTTPException(status_code=400, detail="No cointegrated pair available for experiment")
+
+        prices_a = db.query(Price).filter(Price.symbol == pair.symbol_a).order_by(Price.timestamp.asc()).all()
+        prices_b = db.query(Price).filter(Price.symbol == pair.symbol_b).order_by(Price.timestamp.asc()).all()
+
+        if not prices_a or not prices_b:
+            raise HTTPException(status_code=400, detail="Insufficient price data for experiment")
+
+        df_a = pd.DataFrame([{'timestamp': p.timestamp, 'close_a': p.close} for p in prices_a]).set_index('timestamp')
+        df_b = pd.DataFrame([{'timestamp': p.timestamp, 'close_b': p.close} for p in prices_b]).set_index('timestamp')
+        df = df_a.join(df_b, how='inner').sort_index()
+
+        if len(df) < 30:
+            raise HTTPException(status_code=400, detail="Insufficient overlapping price bars for experiment")
+
+        df = df.reset_index()
+        hedge_ratio = sanitize_float(pair.hedge_ratio, 1.0)
+        spread = spread_calculator.calculate_spread(df['close_a'], df['close_b'], hedge_ratio)
+        rolling_stats = spread_calculator.calculate_rolling_statistics(spread, window=20)
+        z_score = spread_calculator.calculate_z_score(
+            spread,
+            rolling_stats['rolling_mean'],
+            rolling_stats['rolling_std'],
+            window=20
         )
 
-        # Generate windows
-        windows = walk_forward.generate_windows(quant_config.start_date, quant_config.end_date)
+        df_a_in = pd.DataFrame({'timestamp': df['timestamp'], 'close': df['close_a']})
+        df_b_in = pd.DataFrame({'timestamp': df['timestamp'], 'close': df['close_b']})
 
-        if not windows:
-            raise ValueError("Insufficient data for walk-forward validation")
+        engine = BacktestEngine(quant_config)
+        results = engine.run_backtest(df_a_in, df_b_in, spread, z_score, hedge_ratio)
 
-        # Run simplified walk-forward (using demo data for now)
-        # In production, this would use real price data
-        total_return = 18.42 + (config.entry - 2.0) * 1.7
-        sharpe_val = 1.31 - (config.entry - 2.0) * 0.08
-        drawdown_val = -8.21 - (config.holding - 30) * 0.04
+        total_return = round(sanitize_float(results['total_return']), 2)
+        sharpe_val = round(sanitize_float(results['sharpe_ratio']), 2)
+        drawdown_val = round(sanitize_float(results['max_drawdown']), 2)
+        cagr_val = round(sanitize_float(results['cagr']), 2)
+        win_rate_val = round(sanitize_float(results['win_rate']), 1)
+        num_trades = int(results['num_trades'])
 
-        # Store experiment in database
+        experiment_name = f"Z-Score {config.entry}/{config.exit} ({pair.symbol_a}/{pair.symbol_b})"
+
         experiment = ResearchExperiment(
             id=experiment_id,
-            name=f"Experiment {config.entry}/{config.exit}",
-            description=f"Entry: {config.entry}, Exit: {config.exit}",
+            name=experiment_name,
+            description=f"Entry Z={config.entry}, Exit Z={config.exit}, Stop Z={config.stop}, Max Holding={config.holding}D",
             entry_z_score=config.entry,
             exit_z_score=config.exit,
             stop_z_score=config.stop,
@@ -72,14 +129,14 @@ async def run_experiment(config: BacktestConfig, db: Session = Depends(get_db)) 
             transaction_cost=config.cost,
             slippage=config.slippage,
             position_sizing=config.position,
-            correlation_threshold=0.70,
+            correlation_threshold=0.50,
             coint_p_value=0.05,
             total_return=total_return,
             sharpe_ratio=sharpe_val,
             max_drawdown=drawdown_val,
-            cagr=0.0,
-            win_rate=0.0,
-            num_trades=0,
+            cagr=cagr_val,
+            win_rate=win_rate_val,
+            num_trades=num_trades,
             start_date=quant_config.start_date,
             end_date=quant_config.end_date,
             status="completed"
@@ -89,24 +146,26 @@ async def run_experiment(config: BacktestConfig, db: Session = Depends(get_db)) 
         db.commit()
 
         return ExperimentResult(
-            name=f"Experiment {config.entry}/{config.exit}",
+            name=experiment_name,
             date=datetime.now().strftime("%d %b %Y"),
             entry=config.entry,
             exit=config.exit,
-            return_val=round(total_return, 2),
-            sharpe=round(sharpe_val, 2),
-            drawdown=round(drawdown_val, 2)
+            return_val=total_return,
+            sharpe=sharpe_val,
+            drawdown=drawdown_val
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error running experiment: {e}")
-        raise ValueError(str(e))
+        logger.error(f"Error running experiment: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/experiments", response_model=List[ExperimentResult])
 async def get_experiments(db: Session = Depends(get_db)) -> List[ExperimentResult]:
     """
-    Get all research experiments.
+    Get all research experiments ordered by creation date.
     """
     experiments = db.query(ResearchExperiment).order_by(
         ResearchExperiment.created_at.desc()
@@ -119,10 +178,11 @@ async def get_experiments(db: Session = Depends(get_db)) -> List[ExperimentResul
             date=exp.created_at.strftime("%d %b %Y"),
             entry=exp.entry_z_score,
             exit=exp.exit_z_score,
-            return_val=round(exp.total_return or 0, 2),
-            sharpe=round(exp.sharpe_ratio or 0, 2),
-            drawdown=round(exp.max_drawdown or 0, 2)
+            return_val=round(sanitize_float(exp.total_return), 2),
+            sharpe=round(sanitize_float(exp.sharpe_ratio), 2),
+            drawdown=round(sanitize_float(exp.max_drawdown), 2)
         )
         results.append(result)
 
     return results
+

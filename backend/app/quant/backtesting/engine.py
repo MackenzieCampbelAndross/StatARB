@@ -238,24 +238,38 @@ class BacktestEngine:
         hedge_ratio: float
     ) -> None:
         """Open a new position."""
-        # Calculate position size based on configuration
-        position_size = self._calculate_position_size(price_a, price_b, hedge_ratio)
+        allocated_capital = self._calculate_position_size(price_a, price_b, hedge_ratio)
+        if allocated_capital <= 0:
+            return
 
-        # Apply slippage
-        price_a_with_slippage = self._apply_slippage(price_a, direction)
-        price_b_with_slippage = self._apply_slippage(price_b, direction)
+        price_a_eff = self._apply_slippage(price_a, direction)
+        price_b_eff = self._apply_slippage(price_b, direction)
 
-        # Apply transaction cost
-        cost = self._calculate_transaction_cost(position_size, price_a_with_slippage, price_b_with_slippage)
-        self.current_capital -= cost
+        hr = max(abs(hedge_ratio), 0.001)
+        spread_unit_cost = price_a_eff + (hr * price_b_eff)
+        if spread_unit_cost <= 0:
+            return
+
+        units_a = allocated_capital / (2.0 * price_a_eff)
+        units_b = units_a * hr
+
+        notional_entry = (units_a * price_a_eff) + (units_b * price_b_eff)
+        entry_cost = notional_entry * (self.config.transaction_cost / 100.0)
+
+        self.current_capital -= entry_cost
 
         self.current_position = direction
         self.position_entry_date = entry_date
         self.position_entry_z = entry_z
+        self.position_entry_price_a = price_a_eff
+        self.position_entry_price_b = price_b_eff
+        self.position_units_a = units_a
+        self.position_units_b = units_b
+        self.position_entry_cost = entry_cost
 
         logger.info(
             f"Opened {direction.value} position at Z={entry_z:.2f}, "
-            f"size={position_size:.2f}, cost={cost:.2f}"
+            f"units_a={units_a:.2f}, units_b={units_b:.2f}, entry_cost={entry_cost:.2f}"
         )
 
     def _close_position(
@@ -270,53 +284,59 @@ class BacktestEngine:
         if self.current_position is None:
             return
 
-        # Calculate P&L
-        # This is a simplified calculation - in production, you'd track actual position values
         direction = self.current_position
         entry_z = self.position_entry_z
         entry_date = self.position_entry_date
+        entry_p_a = getattr(self, 'position_entry_price_a', price_a)
+        entry_p_b = getattr(self, 'position_entry_price_b', price_b)
+        units_a = getattr(self, 'position_units_a', 1.0)
+        units_b = getattr(self, 'position_units_b', hedge_ratio)
+        entry_cost = getattr(self, 'position_entry_cost', 0.0)
 
-        # Simplified P&L based on Z-score reversion
-        # In production, calculate based on actual price changes
-        z_change = entry_z - exit_z  # Positive if profitable for correct direction
-        base_pnl = z_change * 1000  # Simplified scaling
+        # Apply slippage on exit
+        exit_p_a = self._apply_slippage(price_a, PositionType.SHORT if direction == PositionType.LONG else PositionType.LONG)
+        exit_p_b = self._apply_slippage(price_b, PositionType.LONG if direction == PositionType.LONG else PositionType.SHORT)
 
-        # Apply transaction cost on exit
-        position_size = self._calculate_position_size(price_a, price_b, hedge_ratio)
-        exit_cost = self._calculate_transaction_cost(position_size, price_a, price_b)
-
+        # Actual statistical arbitrage P&L calculation:
+        # LONG spread = Long A, Short B
+        # SHORT spread = Short A, Long B
         if direction == PositionType.LONG:
-            pnl = base_pnl if z_change > 0 else -base_pnl
+            gross_pnl_a = units_a * (exit_p_a - entry_p_a)
+            gross_pnl_b = -units_b * (exit_p_b - entry_p_b)
         else:
-            pnl = base_pnl if z_change < 0 else -base_pnl
+            gross_pnl_a = -units_a * (exit_p_a - entry_p_a)
+            gross_pnl_b = units_b * (exit_p_b - entry_p_b)
 
-        net_pnl = pnl - exit_cost
-        self.current_capital += net_pnl
+        gross_pnl = gross_pnl_a + gross_pnl_b
 
-        # Calculate return percentage
-        return_pct = (net_pnl / self.config.initial_capital) * 100
+        notional_exit = (units_a * exit_p_a) + (units_b * exit_p_b)
+        exit_cost = notional_exit * (self.config.transaction_cost / 100.0)
 
-        # Calculate holding period
+        net_pnl = gross_pnl - exit_cost
+        # Add net PnL and restore entry cost previously deducted to avoid double deducting
+        self.current_capital += (net_pnl + entry_cost)
+
+        trade_notional = (units_a * entry_p_a) + (units_b * entry_p_b)
+        return_pct = (net_pnl / trade_notional) * 100.0 if trade_notional > 0 else 0.0
         holding_period = (exit_date - entry_date).days if entry_date else 0
 
-        # Create trade record
         trade = Trade(
-            pair_id="demo_pair",  # Would be actual pair ID in production
+            pair_id="pair",
             entry_date=entry_date,
             exit_date=exit_date,
             direction=direction,
             entry_z_score=entry_z,
             exit_z_score=exit_z,
-            entry_price_a=0,  # Would track actual entry prices
-            entry_price_b=0,
-            exit_price_a=price_a,
-            exit_price_b=price_b,
+            entry_price_a=entry_p_a,
+            entry_price_b=entry_p_b,
+            exit_price_a=exit_p_a,
+            exit_price_b=exit_p_b,
             hedge_ratio=hedge_ratio,
-            position_size=position_size,
+            position_size=trade_notional,
             pnl=net_pnl,
             return_pct=return_pct,
             holding_period=holding_period,
-            transaction_cost=exit_cost,
+            transaction_cost=entry_cost + exit_cost,
             slippage=self.config.slippage
         )
 
@@ -338,33 +358,26 @@ class BacktestEngine:
         price_b: float,
         hedge_ratio: float
     ) -> float:
-        """Calculate position size based on configuration."""
-        if self.config.position_sizing == "equal_weight":
-            return self.current_capital * 0.1  # 10% of capital per position
-        elif self.config.position_sizing == "volatility_adjusted":
-            # Simplified volatility adjustment
-            # In production, calculate actual volatility
-            return self.current_capital * 0.1
-        else:
-            return self.current_capital * 0.1
+        """Calculate position size in capital allocation currency."""
+        # 10% of portfolio capital per trade
+        return max(self.current_capital * 0.10, 1000.0)
 
     def _apply_slippage(self, price: float, direction: PositionType) -> float:
         """Apply slippage to price."""
         slippage_amount = price * (self.config.slippage / 100)
 
         if direction == PositionType.LONG:
-            return price + slippage_amount  # Pay more on entry
+            return price + slippage_amount
         else:
-            return price - slippage_amount  # Receive less on entry
+            return price - slippage_amount
 
     def _calculate_transaction_cost(
         self,
-        position_size: float,
+        notional_value: float,
         price_a: float,
         price_b: float
     ) -> float:
-        """Calculate transaction cost."""
-        notional_value = position_size * (price_a + abs(price_b))
+        """Calculate transaction cost from notional."""
         return notional_value * (self.config.transaction_cost / 100)
 
     def _calculate_results(self) -> Dict:

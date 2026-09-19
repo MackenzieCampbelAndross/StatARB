@@ -1,37 +1,28 @@
 import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
+import Script from 'next/script'
 import './globals.css'
 
 export const metadata: Metadata = {
   title: 'StatArb N50 | Quant Research Terminal',
   description: 'Institutional-grade cointegration research and statistical arbitrage analytics for the Nifty 50.',
-  generator: 'v0.app',
   icons: {
     icon: [
       {
-        url: '/icon-light-32x32.png',
-        media: '(prefers-color-scheme: light)',
-      },
-      {
         url: '/icon-dark-32x32.png',
-        media: '(prefers-color-scheme: dark)',
-      },
-      {
-        url: '/icon.svg',
-        type: 'image/svg+xml',
+        type: 'image/png',
       },
     ],
-    apple: '/apple-icon.png',
+    apple: '/icon-dark-32x32.png',
   },
 }
 
 export const viewport: Viewport = {
   colorScheme: 'light dark',
-  themeColor: [
-    { media: '(prefers-color-scheme: light)', color: 'white' },
-    { media: '(prefers-color-scheme: dark)', color: 'black' },
-  ],
+  themeColor: '#0a0a0a',
 }
+
+const themeScript = `(function(){try{var t=localStorage.getItem('statarb-theme');if(t==='dark'||t==='light'){document.documentElement.setAttribute('data-theme',t);}else{document.documentElement.setAttribute('data-theme','light');}}catch(e){document.documentElement.setAttribute('data-theme','light');}})();`
 
 export default function RootLayout({
   children,
@@ -39,8 +30,15 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en">
-      <body className="antialiased">
+    <html lang="en" data-theme="light" suppressHydrationWarning>
+      <head>
+        <Script
+          id="statarb-theme-init"
+          strategy="beforeInteractive"
+          dangerouslySetInnerHTML={{ __html: themeScript }}
+        />
+      </head>
+      <body className="antialiased" suppressHydrationWarning>
         {children}
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
