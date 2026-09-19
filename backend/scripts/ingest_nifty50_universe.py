@@ -105,11 +105,12 @@ def ingest():
         ticker_map = {c["yf_symbol"]: c["id"] for c in NIFTY_50_CONSTITUENTS}
         yf_tickers = list(ticker_map.keys())
 
-        logger.info(f"Downloading historical daily data from 2023-01-01 to 2026-09-19 for {len(yf_tickers)} symbols...")
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        logger.info(f"Downloading historical daily data from 2023-01-01 to {end_date} for {len(yf_tickers)} symbols...")
         data = yf.download(
             tickers=yf_tickers,
             start="2023-01-01",
-            end="2026-09-19",
+            end=end_date,
             interval="1d",
             group_by="ticker",
             progress=True,
@@ -133,7 +134,7 @@ def ingest():
                     sub_df = data[yf_tick].dropna(subset=["Close"])
                 else:
                     logger.warning(f"Fetching {yf_tick} individually...")
-                    sub_df = yf.download(yf_tick, start="2023-01-01", end="2026-09-19", interval="1d", progress=False)
+                    sub_df = yf.download(yf_tick, start="2023-01-01", end=end_date, interval="1d", progress=False)
 
                 if sub_df.empty:
                     logger.warning(f"No price data for {symbol} ({yf_tick})")

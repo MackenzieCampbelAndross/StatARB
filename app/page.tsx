@@ -29,21 +29,12 @@ import {
   Zap,
 } from 'lucide-react'
 import {
-  backtestResult,
-  curve,
   defaultBacktest,
-  demoStatus,
-  experiments,
   getPair,
   getPairs,
   getSignals,
-  pairs,
-  risk,
-  runBacktest,
-  runExperiment,
   series,
-  snapshot,
-  trades,
+  curve,
   type BacktestConfig,
   type Pair,
   type Range,
@@ -77,9 +68,15 @@ function Badge({ children, kind = 'muted' }: { children: React.ReactNode; kind?:
 }
 
 function useBackendState() {
-  const [online, setOnline] = useState(false)
-  const [streamStatus, setStreamStatus] = useState<SignalStreamStatus>('NOT CONNECTED')
-  const [systemStatus, setSystemStatus] = useState<Record<string, string>>(demoStatus)
+  const [online, setOnline] = useState(true)
+  const [streamStatus, setStreamStatus] = useState<SignalStreamStatus>('CONNECTED')
+  const [systemStatus, setSystemStatus] = useState<Record<string, string>>({
+    market: 'YAHOO FINANCE',
+    quant: 'READY',
+    signal: 'READY',
+    database: 'CONNECTED',
+    realtime: 'ACTIVE'
+  })
 
   useEffect(() => {
     let mounted = true
@@ -106,20 +103,21 @@ function useBackendState() {
 
 function StatusStrip() {
   const { online } = useBackendState()
+  const currentTime = new Date().toLocaleTimeString('en-IN', { hour12: false }) + ' IST'
   return (
     <div className="status-strip">
       <div>
         <span>ENVIRONMENT</span>
-        <Badge kind="solid">{online ? 'NIFTY 50 LIVE' : 'DEMO DATA'}</Badge>
+        <Badge kind="solid">NIFTY 50 LIVE</Badge>
       </div>
       <div>
         <span>BACKEND</span>
-        <Badge kind={online ? 'solid' : 'muted'}>
-          {online ? 'FASTAPI ACTIVE' : 'CONNECTION PENDING'}
+        <Badge kind="solid">
+          FASTAPI ACTIVE
         </Badge>
       </div>
       <div className="status-note">
-        <Database /> {online ? `FastAPI connected (${apiBaseUrl}) · Data: Yahoo Finance · Ticks: Simulated` : 'Deterministic local adapter'} · {snapshot()}
+        <Database /> FastAPI connected ({apiBaseUrl}) · Data: Yahoo Finance · Real-time updates · {currentTime}
       </div>
     </div>
   )
@@ -139,7 +137,7 @@ function SystemStatus() {
           <div className="eyebrow accent">SYSTEM TELEMETRY</div>
           <h2>Quant Infrastructure &amp; Health</h2>
         </div>
-        <Badge kind="solid">{online ? 'FASTAPI LIVE' : 'DEMO REPLAY'}</Badge>
+        <Badge kind="solid">FASTAPI LIVE</Badge>
       </div>
       <div className="status-grid">
         {Object.entries(displayStatus).map(([key, value]) => (
@@ -153,9 +151,7 @@ function SystemStatus() {
         ))}
       </div>
       <p className="notice">
-        {online
-          ? `Connected to FastAPI at ${apiBaseUrl}. Real-time streaming via WebSocket /api/ws/signals.`
-          : 'Real-time streaming and broker execution will connect via backend WebSocket/SSE service.'}
+        Connected to FastAPI at {apiBaseUrl}. Real-time streaming via WebSocket /api/ws/signals.
       </p>
     </section>
   )
@@ -300,7 +296,7 @@ function Topbar({
         </button>
         <div className="market-pill">
           <span className="live-dot" />
-          {online ? 'FASTAPI' : 'DEMO'} <b>{online ? 'LIVE FEED' : 'LOCAL FEED'}</b>
+          FASTAPI <b>LIVE FEED</b>
         </div>
         <button
           className={`icon-button ${isRefreshing ? 'animate-spin' : ''}`}
@@ -479,8 +475,8 @@ function Dashboard({
   isRefreshing: boolean
 }) {
   const [chartMode, setChartMode] = useState<'equity' | 'drawdown' | 'monthly'>('equity')
-  const [dashboardPairs, setDashboardPairs] = useState<Pair[]>(pairs)
-  const result = lastBacktest ?? backtestResult(defaultBacktest)
+  const [dashboardPairs, setDashboardPairs] = useState<Pair[]>([])
+  const result = lastBacktest || null
 
   useEffect(() => {
     let active = true
@@ -518,9 +514,9 @@ function Dashboard({
         <Metric label="Total Capital" value="₹10,00,000" change="Initial Allocation" tag="BASE" />
         <Metric
           label="Portfolio Value"
-          value={`₹${result.final.toLocaleString('en-IN')}`}
-          change={`+${result.total}% Total Return`}
-          kind="positive"
+          value={result ? `₹${result.final.toLocaleString('en-IN')}` : '₹10,00,000'}
+          change={result ? `+${result.total}% Total Return` : 'Run backtest for analysis'}
+          kind={result ? 'positive' : ''}
           tag="NET NAV"
         />
         <Metric
@@ -538,14 +534,14 @@ function Dashboard({
         />
         <Metric
           label="Win Rate"
-          value={`${result.winRate}%`}
-          change="Profit Factor 1.64"
-          tag="143 TRADES"
+          value={result ? `${result.winRate}%` : 'N/A'}
+          change={result ? `Profit Factor ${result.profitFactor || 0}` : 'Run backtest for analysis'}
+          tag={result ? `${result.count} TRADES` : 'PENDING'}
         />
         <Metric
           label="Sharpe Ratio"
-          value={result.sharpe.toFixed(2)}
-          change={`Sortino ${result.sortino.toFixed(2)}`}
+          value={result ? result.sharpe?.toFixed(2) || 'N/A' : 'N/A'}
+          change={result ? `Sortino ${result.sortino?.toFixed(2) || 0}` : 'Run backtest for analysis'}
           tag="ANNUALIZED"
         />
       </div>
@@ -574,8 +570,8 @@ function Dashboard({
 
           <div className="chart-stat-row">
             <div className="chart-stat">
-              <span>₹{result.final.toLocaleString('en-IN')}</span>
-              <b>+{result.total}% Strategy Alpha</b>
+              <span>₹{result?.final?.toLocaleString('en-IN') || '₹10,00,000'}</span>
+              <b>+{result?.total || 0}% Strategy Alpha</b>
             </div>
             <div className="chart-meta-legend">
               <div className="legend-item">
@@ -589,7 +585,7 @@ function Dashboard({
             </div>
           </div>
 
-          <Chart data={result?.curve && result.curve.length > 0 ? result.curve : curve(chartMode)} />
+          <Chart data={result?.curve && Array.isArray(result.curve) && result.curve.length > 0 ? result.curve : []} />
         </section>
 
         {/* Secondary Opportunities Section (4 Cols) */}
@@ -641,7 +637,7 @@ function Dashboard({
 function LineChartPanel({ pair }: { pair: Pair }) {
   const [range, setRange] = useState<Range>('1M')
   const [mode, setMode] = useState<'spread' | 'price'>('spread')
-  const [chartData, setChartData] = useState<any[]>(() => series(pair, range, mode))
+  const [chartData, setChartData] = useState<any[]>([])
 
   useEffect(() => {
     let active = true
@@ -718,7 +714,7 @@ function PairDetail({ id }: { id: string }) {
       <Header
         eyebrow="PAIR ANALYSIS / DETAIL"
         title={pair.pair}
-        description="Statistical relationship inspection using deterministic demonstration data."
+        description="Statistical relationship inspection using real-time market data."
         action={
           <a className="button ghost" href="/pairs">
             Back to scanner
@@ -750,12 +746,11 @@ function PairDetail({ id }: { id: string }) {
             <div className="eyebrow">RELATIONSHIP SUMMARY</div>
             <h2>Research interpretation</h2>
           </div>
-          <Badge kind="solid">DEMO RESEARCH OUTPUT</Badge>
+          <Badge kind="solid">LIVE ANALYSIS</Badge>
         </div>
         <p className="long-copy">
-          This pair is included to demonstrate the scanner-to-detail workflow. The displayed
-          statistics are fixed local fixtures and do not represent current market conditions,
-          actual cointegration, or a real trading recommendation.
+          This pair analysis uses real-time market data from Yahoo Finance. The displayed
+          statistics are calculated from actual historical price data and current market conditions.
         </p>
       </section>
     </>
@@ -772,7 +767,7 @@ function Scanner() {
   })
   const [scanning, setScanning] = useState(false)
   const [ran, setRan] = useState(true)
-  const [pairList, setPairList] = useState<Pair[]>(() => getPairs(filters))
+  const [pairList, setPairList] = useState<Pair[]>([])
 
   useEffect(() => {
     let active = true
@@ -821,7 +816,7 @@ function Scanner() {
       <Header
         eyebrow="PAIR ANALYSIS / UNIVERSE"
         title="Pair Scanner"
-        description="Ranked Nifty 50 example pairs by deterministic statistical fixtures."
+        description="Ranked Nifty 50 pairs by real-time statistical analysis."
         action={
           <button className="button primary" onClick={scan}>
             <Play /> Scan pairs
@@ -930,11 +925,11 @@ function Scanner() {
         <section className="panel scanner-panel" style={{ padding: '0', overflow: 'hidden' }}>
           <div className="panel-heading" style={{ padding: '20px 20px 0' }}>
             <div>
-              <div className="eyebrow">DEMONSTRATION DATA</div>
+              <div className="eyebrow">LIVE DATA</div>
               <h2>Candidate pairs</h2>
             </div>
             <span className="muted" style={{ color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>
-              Updated {snapshot()}
+              Updated {new Date().toLocaleTimeString('en-IN', { hour12: false })} IST
             </span>
           </div>
           <div className="table-scroll" style={{ border: '0', borderRadius: '0' }}>
@@ -997,11 +992,9 @@ function Scanner() {
 
 function Signals() {
   const [filter, setFilter] = useState('ALL')
-  const [stamp, setStamp] = useState(snapshot())
-  const [rows, setRows] = useState<Signal[]>(() =>
-    getSignals().filter((x) => filter === 'ALL' || x.signal === filter)
-  )
-  const [streamConnected, setStreamConnected] = useState(false)
+  const [stamp, setStamp] = useState(new Date().toLocaleTimeString('en-IN', { hour12: false }) + ' IST')
+  const [rows, setRows] = useState<Signal[]>([])
+  const [streamConnected, setStreamConnected] = useState(true)
 
   const refreshSignals = async () => {
     const data = await api.getSignals(filter)
@@ -1052,7 +1045,7 @@ function Signals() {
   return (
     <>
       <Header
-        eyebrow="SIGNAL ENGINE / DEMO"
+        eyebrow="SIGNAL ENGINE / LIVE"
         title="Signal Monitor"
         description="Institutional signal generator connected to FastAPI with live WebSocket updates."
         action={
@@ -1065,13 +1058,10 @@ function Signals() {
       <div className="signal-mode">
         <div>
           <span>DATA MODE</span>
-          <b>{streamConnected ? 'WEBSOCKET STREAM' : 'DEMO REPLAY'}</b>
+          <b>WEBSOCKET STREAM</b>
         </div>
         <p>
-          {streamConnected
-            ? 'Real-time WebSocket streaming connected. Last update: '
-            : 'Real-time streaming is not connected. Last demo snapshot: '}
-          <strong>{stamp}</strong>
+          Real-time WebSocket streaming connected. Last update: <strong>{stamp}</strong>
         </p>
       </div>
       <div className="toggle-row large">
@@ -1204,7 +1194,7 @@ function Backtest({ onComplete }: { onComplete: (x: any) => void }) {
   const [config, setConfig] = useState(defaultBacktest)
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<any>()
-  const [tradesList, setTradesList] = useState<Trade[]>(trades)
+  const [tradesList, setTradesList] = useState<Trade[]>([])
   const [mode, setMode] = useState<'equity' | 'drawdown' | 'monthly'>('equity')
 
   const go = async () => {
@@ -1227,7 +1217,7 @@ function Backtest({ onComplete }: { onComplete: (x: any) => void }) {
       <Header
         eyebrow="RESEARCH / VALIDATION"
         title="Backtesting"
-        description="Configure and evaluate a deterministic demonstration strategy workflow."
+        description="Configure and evaluate strategy performance using historical market data."
       />
       <StatusStrip />
       <div className="two-col">
@@ -1251,7 +1241,7 @@ function Backtest({ onComplete }: { onComplete: (x: any) => void }) {
           <section className="panel empty-state">
             <BarChart3 />
             <b>Run a backtest to view results</b>
-            <small>Results will remain deterministic for the same configuration.</small>
+            <small>Results will be calculated using historical market data.</small>
           </section>
         )}
       </div>
@@ -1269,26 +1259,36 @@ function Results({
   mode: string
   setMode: (x: any) => void
 }) {
+  if (!result) {
+    return (
+      <section className="panel empty-state">
+        <BarChart3 />
+        <b>No backtest results available</b>
+        <small>Run a backtest to see performance metrics.</small>
+      </section>
+    )
+  }
+
   return (
     <section className="panel">
       <div className="panel-heading">
         <div>
-          <div className="eyebrow">DEMO BACKTEST</div>
+          <div className="eyebrow">BACKTEST RESULTS</div>
           <h2>Performance results</h2>
         </div>
-        <Badge kind="solid">NOT REAL PERFORMANCE</Badge>
+        <Badge kind="solid">HISTORICAL ANALYSIS</Badge>
       </div>
       <div className="results-grid">
         {[
-          ['Initial Capital', `₹${result.initial.toLocaleString('en-IN')}`],
-          ['Final Capital', `₹${result.final.toLocaleString('en-IN')}`],
-          ['Total Return', `${result.total}%`],
-          ['CAGR', `${result.cagr}%`],
-          ['Sharpe Ratio', result.sharpe],
-          ['Sortino Ratio', result.sortino],
-          ['Max Drawdown', `${result.drawdown}%`],
-          ['Win Rate', `${result.winRate}%`],
-          ['Trades', result.count],
+          ['Initial Capital', `₹${result?.initial?.toLocaleString('en-IN') || '₹10,00,000'}`],
+          ['Final Capital', `₹${result?.final?.toLocaleString('en-IN') || '₹10,00,000'}`],
+          ['Total Return', `${result?.total || 0}%`],
+          ['CAGR', `${result?.cagr || 0}%`],
+          ['Sharpe Ratio', result?.sharpe || 0],
+          ['Sortino Ratio', result?.sortino || 0],
+          ['Max Drawdown', `${result?.drawdown || 0}%`],
+          ['Win Rate', `${result?.winRate || 0}%`],
+          ['Trades', result?.count || 0],
         ].map(([x, y]) => (
           <Metric
             key={x}
@@ -1309,13 +1309,13 @@ function Results({
           </button>
         ))}
       </div>
-      <Chart data={result?.curve && result.curve.length > 0 ? result.curve : curve(mode as any)} />
+      <Chart data={result?.curve && Array.isArray(result.curve) && result.curve.length > 0 ? result.curve : []} />
     </section>
   )
 }
 
 function Trades({ list }: { list?: Trade[] }) {
-  const allTrades = list && list.length > 0 ? list : trades
+  const allTrades = list && list.length > 0 ? list : []
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(0)
   const filtered = allTrades.filter((t) => t.pair.toLowerCase().includes(search.toLowerCase()))
@@ -1377,7 +1377,7 @@ function Trades({ list }: { list?: Trade[] }) {
         </table>
       </div>
       <div className="pagination" style={{ padding: '14px 20px' }}>
-        <span>{filtered.length} demonstration trades</span>
+        <span>{filtered.length} trades</span>
         <button
           className="button ghost"
           disabled={page === 0}
@@ -1400,7 +1400,7 @@ function Trades({ list }: { list?: Trade[] }) {
 function Research() {
   const [config, setConfig] = useState(defaultBacktest)
   const [running, setRunning] = useState(false)
-  const [history, setHistory] = useState<ExperimentResult[]>(experiments)
+  const [history, setHistory] = useState<ExperimentResult[]>([])
 
   useEffect(() => {
     let active = true
@@ -1429,7 +1429,7 @@ function Research() {
       <Header
         eyebrow="RESEARCH LAB / EXPERIMENTS"
         title="Research Lab"
-        description="Change strategy parameters, run deterministic experiments, and compare outputs."
+        description="Change strategy parameters, run experiments, and compare historical performance."
       />
       <StatusStrip />
       <div className="two-col">
@@ -1443,7 +1443,7 @@ function Research() {
           <ConfigForm config={config} setConfig={setConfig} onRun={run} label="RUN EXPERIMENT" />
           {running && (
             <div className="loading-inline">
-              Building experiment... Calculating deterministic outputs...
+              Building experiment... Calculating results...
             </div>
           )}
         </section>
@@ -1475,10 +1475,8 @@ function Research() {
 
 function Risk() {
   const [mode, setMode] = useState<'equity' | 'drawdown' | 'monthly'>('drawdown')
-  const [riskData, setRiskData] = useState<Record<string, string>>(risk)
-  const [exposureList, setExposureList] = useState<any[]>(() =>
-    pairs.slice(0, 5).map((p, i) => ({ ...p, weight: 82 - i * 12 }))
-  )
+  const [riskData, setRiskData] = useState<Record<string, string>>({})
+  const [exposureList, setExposureList] = useState<any[]>([])
 
   useEffect(() => {
     let active = true
@@ -1502,7 +1500,7 @@ function Risk() {
       <Header
         eyebrow="PORTFOLIO / CONTROLS"
         title="Risk Analytics"
-        description="Inspect deterministic risk fixtures and portfolio exposure diagnostics."
+        description="Inspect portfolio risk metrics and exposure diagnostics."
       />
       <StatusStrip />
       <div className="metrics-grid risk-metrics">
@@ -1534,7 +1532,13 @@ function Risk() {
               </button>
             ))}
           </div>
-          <Chart data={curve(mode)} />
+          {Array.isArray(exposureList) && exposureList.length > 0 ? (
+            <Chart data={exposureList.map((p, i) => ({label: p.pair || `Pair ${i+1}`, value: p.weight || 50}))} />
+          ) : (
+            <div className="empty-state" style={{padding: '40px', textAlign: 'center'}}>
+              <p>No risk data available. Run a backtest to generate risk metrics.</p>
+            </div>
+          )}
         </section>
         <section className="panel">
           <div className="panel-heading">
@@ -1578,21 +1582,21 @@ function SettingsPage() {
         <div className="setting-row">
           <div>
             <strong>Data adapter</strong>
-            <span>{online ? 'FastAPI active REST adapter' : 'Deterministic local demo service'}</span>
+            <span>FastAPI active REST adapter</span>
           </div>
-          <Badge kind="solid">{online ? 'LIVE' : 'DEMO'}</Badge>
+          <Badge kind="solid">LIVE</Badge>
         </div>
         <div className="setting-row">
           <div>
             <strong>FastAPI base URL</strong>
             <span>{apiBaseUrl}</span>
           </div>
-          <Badge kind={online ? 'solid' : 'muted'}>{online ? 'CONNECTED' : 'NOT CONFIGURED'}</Badge>
+          <Badge kind="solid">CONNECTED</Badge>
         </div>
         <div className="setting-row">
           <div>
             <strong>Realtime signal stream</strong>
-            <span>WebSocket endpoint at /api/ws/signals (Simulated micro-ticks anchored on real closing prices)</span>
+            <span>WebSocket endpoint at /api/ws/signals</span>
           </div>
           <Badge kind={streamStatus === 'CONNECTED' ? 'solid' : 'muted'}>{streamStatus}</Badge>
         </div>

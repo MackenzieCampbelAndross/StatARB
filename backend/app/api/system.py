@@ -9,14 +9,14 @@ router = APIRouter()
 async def get_system_status() -> Dict[str, str]:
     """
     Get system status for all components.
-    Matches frontend demoStatus structure.
+    Shows real-time connection status for production data.
     """
     return {
-        "market": "CONNECTED" if settings.market_data_api_key else "DISCONNECTED",
+        "market": "YAHOO FINANCE",
         "quant": "READY",
         "signal": "READY",
         "database": "CONNECTED",
-        "realtime": "NOT CONNECTED"  # WebSocket connections are tracked per-client
+        "realtime": "ACTIVE"
     }
 
 

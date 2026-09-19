@@ -1,4 +1,3 @@
-import * as demo from '@/lib/demo'
 import type {
   BacktestConfig,
   Pair,
@@ -72,8 +71,7 @@ async function fetchWithTimeout(
 
 /**
  * Robust, centralized API layer for StatArb N50.
- * Directly calls FastAPI backend with transparent, seamless fallback to demo data
- * whenever the backend is unreachable or returning errors.
+ * Directly calls FastAPI backend for real-time data.
  */
 export const api = {
   /**
@@ -103,217 +101,209 @@ export const api = {
     signal?: string
     query?: string
   }): Promise<Pair[]> {
-    try {
-      const params = new URLSearchParams()
-      if (filters?.minCorrelation !== undefined) params.set('minCorrelation', String(filters.minCorrelation))
-      if (filters?.maxP !== undefined) params.set('maxP', String(filters.maxP))
-      if (filters?.maxHalfLife !== undefined) params.set('maxHalfLife', String(filters.maxHalfLife))
-      if (filters?.signal && filters.signal !== 'ALL') params.set('signal', filters.signal)
-      if (filters?.query) params.set('query', filters.query)
+    const params = new URLSearchParams()
+    if (filters?.minCorrelation !== undefined) params.set('minCorrelation', String(filters.minCorrelation))
+    if (filters?.maxP !== undefined) params.set('maxP', String(filters.maxP))
+    if (filters?.maxHalfLife !== undefined) params.set('maxHalfLife', String(filters.maxHalfLife))
+    if (filters?.signal && filters.signal !== 'ALL') params.set('signal', filters.signal)
+    if (filters?.query) params.set('query', filters.query)
 
-      const url = `${apiBaseUrl}/api/pairs${params.toString() ? `?${params.toString()}` : ''}`
-      const res = await fetchWithTimeout(url, { method: 'GET' }, 3000)
+    const url = `${apiBaseUrl}/api/pairs${params.toString() ? `?${params.toString()}` : ''}`
+    const res = await fetchWithTimeout(url, { method: 'GET' }, 3000)
 
-      if (res.ok) {
-        const data = await res.json()
-        if (Array.isArray(data) && data.length > 0) {
-          backendConnected = true
-          return data
-        }
-      }
-    } catch (err) {
-      // Graceful fallback to demo data
+    if (!res.ok) {
+      throw new Error(`Failed to fetch pairs: ${res.status}`)
     }
-    const fallbackFilters = filters
-      ? {
-          minCorrelation: filters.minCorrelation ?? 0.7,
-          maxP: filters.maxP ?? 0.05,
-          maxHalfLife: filters.maxHalfLife ?? 30,
-          signal: filters.signal ?? 'ALL',
-          query: filters.query,
-        }
-      : undefined
-    return demo.getPairs(fallbackFilters)
+
+    const data = await res.json()
+    if (!Array.isArray(data)) {
+      throw new Error('Invalid response format from pairs API')
+    }
+
+    backendConnected = true
+    return data
   },
 
   /**
    * Get a single pair by ID (/api/pairs/{id}) with fallback
    */
   async getPair(id: string): Promise<Pair> {
-    try {
-      const res = await fetchWithTimeout(`${apiBaseUrl}/api/pairs/${id}`, { method: 'GET' }, 3000)
-      if (res.ok) {
-        const data = await res.json()
-        if (data && data.id) {
-          backendConnected = true
-          return data
-        }
-      }
-    } catch (err) {
-      // Graceful fallback
+    const res = await fetchWithTimeout(`${apiBaseUrl}/api/pairs/${id}`, { method: 'GET' }, 3000)
+
+    if (!res.ok) {
+      throw new Error(`Failed to fetch pair: ${res.status}`)
     }
-    return demo.getPair(id)
+
+    const data = await res.json()
+    if (!data || !data.id) {
+      throw new Error('Invalid response format from pair API')
+    }
+
+    backendConnected = true
+    return data
   },
 
   /**
    * Get active signals (/api/signals) with fallback
    */
   async getSignals(filter = 'ALL'): Promise<Signal[]> {
-    try {
-      const url = `${apiBaseUrl}/api/signals${filter !== 'ALL' ? `?filter=${encodeURIComponent(filter)}` : ''}`
-      const res = await fetchWithTimeout(url, { method: 'GET' }, 3000)
-      if (res.ok) {
-        const data = await res.json()
-        if (Array.isArray(data)) {
-          backendConnected = true
-          return data
-        }
-      }
-    } catch (err) {
-      // Graceful fallback
+    const url = `${apiBaseUrl}/api/signals${filter !== 'ALL' ? `?filter=${encodeURIComponent(filter)}` : ''}`
+    const res = await fetchWithTimeout(url, { method: 'GET' }, 3000)
+
+    if (!res.ok) {
+      throw new Error(`Failed to fetch signals: ${res.status}`)
     }
-    const demoData = demo.getSignals()
-    return filter === 'ALL' ? demoData : demoData.filter((x) => x.signal === filter)
+
+    const data = await res.json()
+    if (!Array.isArray(data)) {
+      throw new Error('Invalid response format from signals API')
+    }
+
+    backendConnected = true
+    return data
   },
 
   /**
    * Execute backtest on the backend (/api/backtests) with fallback
    */
   async runBacktest(config: BacktestConfig): Promise<BacktestResult> {
-    try {
-      const res = await fetchWithTimeout(
-        `${apiBaseUrl}/api/backtests`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(config),
-        },
-        10000 // Allow up to 10s for backtest
-      )
-      if (res.ok) {
-        const data = await res.json()
-        if (data && data.final !== undefined) {
-          backendConnected = true
-          return data
-        }
-      }
-    } catch (err) {
-      // Graceful fallback
+    const res = await fetchWithTimeout(
+      `${apiBaseUrl}/api/backtests`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      },
+      10000 // Allow up to 10s for backtest
+    )
+
+    if (!res.ok) {
+      throw new Error(`Failed to run backtest: ${res.status}`)
     }
-    return demo.runBacktest(config)
+
+    const data = await res.json()
+    if (!data || data.final === undefined) {
+      throw new Error('Invalid response format from backtest API')
+    }
+
+    backendConnected = true
+    return data
   },
 
   /**
    * Get trades for a backtest (/api/backtests/{id}/trades) with fallback
    */
   async getBacktestTrades(backtestId?: string): Promise<Trade[]> {
-    if (!backtestId) return demo.trades
-    try {
-      const res = await fetchWithTimeout(`${apiBaseUrl}/api/backtests/${backtestId}/trades`, { method: 'GET' }, 3000)
-      if (res.ok) {
-        const data = await res.json()
-        if (Array.isArray(data) && data.length > 0) {
-          backendConnected = true
-          return data.map((t: any) => ({
-            ...t,
-            return: t.return ?? t.return_val ?? 0,
-          }))
-        }
-      }
-    } catch (err) {
-      // Graceful fallback
+    if (!backtestId) {
+      throw new Error('Backtest ID is required')
     }
-    return demo.trades
+
+    const res = await fetchWithTimeout(`${apiBaseUrl}/api/backtests/${backtestId}/trades`, { method: 'GET' }, 3000)
+
+    if (!res.ok) {
+      throw new Error(`Failed to fetch backtest trades: ${res.status}`)
+    }
+
+    const data = await res.json()
+    if (!Array.isArray(data)) {
+      throw new Error('Invalid response format from backtest trades API')
+    }
+
+    backendConnected = true
+    return data.map((t: any) => ({
+      ...t,
+      return: t.return ?? t.return_val ?? 0,
+    }))
   },
 
   /**
    * Run research hypothesis experiment (/api/research/experiments) with fallback
    */
   async runExperiment(config: BacktestConfig): Promise<ExperimentResult> {
-    try {
-      const res = await fetchWithTimeout(
-        `${apiBaseUrl}/api/research/experiments`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(config),
-        },
-        5000
-      )
-      if (res.ok) {
-        const data = await res.json()
-        if (data && data.name) {
-          backendConnected = true
-          return {
-            ...data,
-            return: data.return ?? data.return_val ?? 0,
-          }
-        }
-      }
-    } catch (err) {
-      // Graceful fallback
+    const res = await fetchWithTimeout(
+      `${apiBaseUrl}/api/research/experiments`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      },
+      5000
+    )
+
+    if (!res.ok) {
+      throw new Error(`Failed to run experiment: ${res.status}`)
     }
-    return demo.runExperiment(config)
+
+    const data = await res.json()
+    if (!data || !data.name) {
+      throw new Error('Invalid response format from experiment API')
+    }
+
+    backendConnected = true
+    return {
+      ...data,
+      return: data.return ?? data.return_val ?? 0,
+    }
   },
 
   /**
    * Get past experiments history (/api/research/experiments) with fallback
    */
   async getExperiments(): Promise<ExperimentResult[]> {
-    try {
-      const res = await fetchWithTimeout(`${apiBaseUrl}/api/research/experiments`, { method: 'GET' }, 3000)
-      if (res.ok) {
-        const data = await res.json()
-        if (Array.isArray(data) && data.length > 0) {
-          backendConnected = true
-          return data.map((x: any) => ({
-            ...x,
-            return: x.return ?? x.return_val ?? 0,
-          }))
-        }
-      }
-    } catch (err) {
-      // Graceful fallback
+    const res = await fetchWithTimeout(`${apiBaseUrl}/api/research/experiments`, { method: 'GET' }, 3000)
+
+    if (!res.ok) {
+      throw new Error(`Failed to fetch experiments: ${res.status}`)
     }
-    return demo.experiments
+
+    const data = await res.json()
+    if (!Array.isArray(data)) {
+      throw new Error('Invalid response format from experiments API')
+    }
+
+    backendConnected = true
+    return data.map((x: any) => ({
+      ...x,
+      return: x.return ?? x.return_val ?? 0,
+    }))
   },
 
   /**
    * Get portfolio risk metrics (/api/risk) with fallback
    */
   async getRisk(): Promise<Record<string, string>> {
-    try {
-      const res = await fetchWithTimeout(`${apiBaseUrl}/api/risk`, { method: 'GET' }, 3000)
-      if (res.ok) {
-        const data = await res.json()
-        if (data && typeof data === 'object' && Object.keys(data).length > 0) {
-          backendConnected = true
-          return data
-        }
-      }
-    } catch (err) {
-      // Graceful fallback
+    const res = await fetchWithTimeout(`${apiBaseUrl}/api/risk`, { method: 'GET' }, 3000)
+
+    if (!res.ok) {
+      throw new Error(`Failed to fetch risk metrics: ${res.status}`)
     }
-    return demo.risk
+
+    const data = await res.json()
+    if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
+      throw new Error('Invalid response format from risk API')
+    }
+
+    backendConnected = true
+    return data
   },
 
   /**
    * Get system status telemetry (/api/system/status) with fallback
    */
   async getSystemStatus(): Promise<SystemStatus> {
-    try {
-      const res = await fetchWithTimeout(`${apiBaseUrl}/api/system/status`, { method: 'GET' }, 2000)
-      if (res.ok) {
-        const data = await res.json()
-        if (data && data.quant) {
-          backendConnected = true
-          return data
-        }
-      }
-    } catch (err) {
-      // Graceful fallback
+    const res = await fetchWithTimeout(`${apiBaseUrl}/api/system/status`, { method: 'GET' }, 2000)
+
+    if (!res.ok) {
+      throw new Error(`Failed to fetch system status: ${res.status}`)
     }
-    return demo.demoStatus
+
+    const data = await res.json()
+    if (!data || !data.quant) {
+      throw new Error('Invalid response format from system status API')
+    }
+
+    backendConnected = true
+    return data
   },
 
   /**
@@ -324,46 +314,41 @@ export const api = {
     range: Range,
     mode: 'spread' | 'price' = 'spread'
   ): Promise<any[]> {
-    try {
-      const res = await fetchWithTimeout(
-        `${apiBaseUrl}/api/pairs/${pair.id}/series?range=${range}&mode=${mode}`,
-        { method: 'GET' },
-        3000
-      )
-      if (res.ok) {
-        const data = await res.json()
-        if (Array.isArray(data) && data.length > 0) {
-          backendConnected = true
-          return data
-        }
-      }
-    } catch (err) {
-      // Graceful fallback
+    const res = await fetchWithTimeout(
+      `${apiBaseUrl}/api/pairs/${pair.id}/series?range=${range}&mode=${mode}`,
+      { method: 'GET' },
+      3000
+    )
+
+    if (!res.ok) {
+      throw new Error(`Failed to fetch pair series: ${res.status}`)
     }
-    return demo.series(pair, range, mode)
+
+    const data = await res.json()
+    if (!Array.isArray(data) || data.length === 0) {
+      throw new Error('Invalid response format from pair series API')
+    }
+
+    backendConnected = true
+    return data
   },
 
   /**
    * Get active cointegrated pairs exposure (/api/risk/exposure)
    */
   async getRiskExposure(): Promise<any[]> {
-    try {
-      const res = await fetchWithTimeout(`${apiBaseUrl}/api/risk/exposure`, { method: 'GET' }, 3000)
-      if (res.ok) {
-        const data = await res.json()
-        if (Array.isArray(data) && data.length > 0) {
-          backendConnected = true
-          return data
-        }
-      }
-    } catch (err) {
-      // Graceful fallback
+    const res = await fetchWithTimeout(`${apiBaseUrl}/api/risk/exposure`, { method: 'GET' }, 3000)
+
+    if (!res.ok) {
+      throw new Error(`Failed to fetch risk exposure: ${res.status}`)
     }
-    return demo.pairs.slice(0, 5).map((p, i) => ({
-      ...p,
-      weight: 18.4 - i * 2.8,
-    }))
+
+    const data = await res.json()
+    if (!Array.isArray(data)) {
+      throw new Error('Invalid response format from risk exposure API')
+    }
+
+    backendConnected = true
+    return data
   },
 }
-
-export const adapterMode = process.env.NEXT_PUBLIC_API_URL ? 'production' : 'demo'

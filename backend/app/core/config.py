@@ -10,7 +10,7 @@ class Settings(BaseSettings):
 
     # Market Data
     market_data_api_key: str = ""
-    market_data_provider: str = "yahoo_finance"
+    market_data_provider: str = "yahoo_finance"  # Use Yahoo Finance for real-time data
     market_data_cache_ttl: int = 3600
 
     # Real-time Data
