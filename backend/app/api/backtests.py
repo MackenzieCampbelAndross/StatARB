@@ -215,6 +215,20 @@ async def run_backtest(config: BacktestConfig, db: Session = Depends(get_db)) ->
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/demo/trades", response_model=List[Trade])
+async def get_demo_trades(db: Session = Depends(get_db)) -> List[Trade]:
+    """
+    Get trades from latest completed backtest if available.
+    """
+    latest_bt = db.query(BacktestModel).filter(
+        BacktestModel.status == "completed"
+    ).order_by(BacktestModel.created_at.desc()).first()
+
+    if latest_bt:
+        return await get_backtest_trades(latest_bt.id, db)
+    return []
+
+
 @router.get("/{backtest_id}/trades", response_model=List[Trade])
 async def get_backtest_trades(backtest_id: str, db: Session = Depends(get_db)) -> List[Trade]:
     """
@@ -244,17 +258,3 @@ async def get_backtest_trades(backtest_id: str, db: Session = Depends(get_db)) -
         trades.append(trade)
 
     return trades
-
-
-@router.get("/demo/trades", response_model=List[Trade])
-async def get_demo_trades(db: Session = Depends(get_db)) -> List[Trade]:
-    """
-    Get trades from latest completed backtest if available.
-    """
-    latest_bt = db.query(BacktestModel).filter(
-        BacktestModel.status == "completed"
-    ).order_by(BacktestModel.created_at.desc()).first()
-
-    if latest_bt:
-        return await get_backtest_trades(latest_bt.id, db)
-    return []
